@@ -1,0 +1,30 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+
+# IDE specific files (optional, add as needed)
+# .idea/
+# .vscode/
+
+# Streamlit specific (if any)
+# .streamlit/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Exclude all Jupyter Notebooks
+*.ipynb
+
+# Exclude all Markdown files except README.md
+*.md
+!README.md 
