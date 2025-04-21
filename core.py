@@ -4,6 +4,7 @@ import yfinance as yf
 import streamlit as st
 from datetime import date
 from typing import List, Dict, Optional, Tuple
+from pandas import Timestamp # <-- Импорт Timestamp
 
 # --- Константы ---
 TRADING_DAYS_PER_YEAR = 252
@@ -58,6 +59,46 @@ def load_price_data(tickers: List[str], start_date: date, end_date: date) -> Opt
 
         # Добавляем столбец 'Cash' (теперь это безопасно)
         prices['Cash'] = 1.0
+
+        # Загружаем данные БЕЗ auto_adjust, чтобы получить все колонки, включая Adj Close
+        data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, progress=False)
+        if data.empty:
+            print(f"Error: No data downloaded for tickers {tickers} in the specified period.")
+            return None
+
+        # --- Изменено: Используем 'Adj Close' вместо 'Close' ---
+        if 'Adj Close' not in data.columns:
+             print(f"Error: 'Adj Close' column not found in downloaded data for {tickers}.")
+             # Попытка использовать 'Close' как запасной вариант?
+             # Или просто возвращаем None?
+             # Пока возвращаем None для простоты
+             return None
+             
+        adj_close_prices = data['Adj Close'] 
+        # ------------------------------------------------------
+        
+        # Обработка случая одного тикера (yfinance возвращает Series)
+        if isinstance(adj_close_prices, pd.Series):
+            adj_close_prices = adj_close_prices.to_frame(name=tickers[0])
+
+        # Создаем явную копию, чтобы избежать SettingWithCopyWarning
+        prices = adj_close_prices.copy()
+
+        # Проверка на наличие всех тикеров в результате (уже на копии)
+        if not all(ticker in prices.columns for ticker in tickers):
+            missing = [t for t in tickers if t not in prices.columns]
+            print(f"Error: Could not download data for all tickers. Missing: {missing}")
+            return None
+
+        # Удаляем строки, где есть NaN хотя бы для одного тикера (без inplace=True)
+        prices = prices.dropna()
+
+        if prices.empty:
+             print(f"Error: Data became empty after dropping NaN for tickers {tickers}.")
+             return None
+
+        # Добавляем столбец 'Cash' (теперь это безопасно)
+        prices['Cash'] = 1.0
         return prices
 
     except Exception as e:
@@ -77,10 +118,42 @@ def calculate_drawdown_series(series: pd.Series) -> pd.Series:
     drawdown = drawdown.fillna(0)
     return drawdown
 
-@st.cache_data # Кэшируем результаты бэктеста
+# Вспомогательная функция для форматирования весов
+def format_hover_weights(holdings_dict: Dict[str, float], cash_value: float,
+                         prices: pd.Series, assets_to_format: List[str],
+                         all_assets_with_price: List[str]) -> str:
+    """Форматирует строку с весами для hover tooltip."""
+    asset_values = {}
+    total_asset_value = 0.0
+    for ticker in all_assets_with_price:
+        shares = holdings_dict.get(ticker, 0.0)
+        price = prices.get(ticker, np.nan)
+        value = 0.0
+        if shares > 0 and not pd.isna(price) and price > 0:
+            value = shares * price
+        asset_values[ticker] = value
+        total_asset_value += value
+
+    total_value = total_asset_value + cash_value
+
+    hover_parts = []
+    if total_value > 1e-6:
+        # Сначала активы, входящие в целевые
+        for ticker in assets_to_format:
+            weight = asset_values.get(ticker, 0.0) / total_value
+            hover_parts.append(f"{ticker}{weight*100:.0f}")
+        # Затем кэш
+        cash_weight = cash_value / total_value
+        hover_parts.append(f"Cash{cash_weight*100:.0f}")
+    else:
+        return "N/A"
+
+    return '/'.join(hover_parts)
+
+@st.cache_data
 def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
                  rebalance_freq: str, initial_capital: float,
-                 price_change_threshold: float) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
+                 weight_deviation_threshold: float) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
     """
     Выполняет бэктестинг стратегий ребалансировки и сравнение с Buy & Hold.
 
@@ -89,13 +162,15 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
         target_weights (Dict[str, float]): Словарь целевых весов (доли, сумма = 1.0).
         rebalance_freq (str): Частота ребалансировки (Календарная: 'ME', 'QE', 'YE').
         initial_capital (float): Начальный капитал.
-        price_change_threshold (float): Порог изменения цены в % для запуска ценовой ребалансировки.
+        weight_deviation_threshold (float): Абсолютный порог отклонения доли в % для запуска ребалансировки.
 
     Returns:
-        Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
-            Кортеж из двух DataFrame:
+        Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
+            Кортеж из четырех элементов:
             1. results: DataFrame со стоимостями портфелей для разных стратегий.
             2. drawdown_results: DataFrame с рядами просадок для основных стратегий.
+            3. rebalance_log: Словарь с логами ребалансировок {strategy_name: [(date, type)]}.
+            4. hover_weights_text: DataFrame с текстом весов для hover.
             Или None в случае ошибки.
     """
     if price_data is None or price_data.empty or not target_weights:
@@ -106,9 +181,8 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
          print("Error: Price data missing for some assets defined in target_weights.")
          return None
 
-    # Конвертируем порог из % в доли
-    threshold_decimal_upper = 1.0 + price_change_threshold / 100.0
-    threshold_decimal_lower = 1.0 - price_change_threshold / 100.0
+    # Конвертируем порог из % в долю
+    threshold_weight_abs_delta = weight_deviation_threshold / 100.0
 
     # Определяем активы для ребалансировки (из target_weights) и все активы (из price_data)
     assets_to_rebalance = [col for col in target_weights.keys() if col != 'Cash']
@@ -146,7 +220,25 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
     if not np.isclose(initial_total_value_check, initial_capital):
         print(f"Warning: Initial calculated value check ({initial_total_value_check:.2f}) differs from capital ({initial_capital:.2f}).")
 
-    # --- 1. Логика КАЛЕНДАРНОЙ ребалансировки --- (как раньше, но вынесена в отдельную часть)
+    # --- Инициализация логов ребалансировок ---
+    calendar_rebalance_log = []
+    weight_band_rebalance_log = []
+    combined_rebalance_log = []
+    calendar_hover_texts = []
+    weight_band_hover_texts = []
+    combined_hover_texts = []
+    hover_dates = []
+    # -------------------------------------------
+
+    # Добавляем текст для начальной даты
+    initial_hover_text = format_hover_weights(initial_holdings_template, initial_cash, price_data.iloc[0],
+                                             assets_to_rebalance, all_price_assets)
+    calendar_hover_texts.append(initial_hover_text)
+    weight_band_hover_texts.append(initial_hover_text)
+    combined_hover_texts.append(initial_hover_text)
+    hover_dates.append(first_date)
+
+    # --- 1. Логика КАЛЕНДАРНОЙ ребалансировки ---
     portfolio_cal = pd.DataFrame(index=price_data.index)
     portfolio_cal['Holdings'] = pd.Series(dtype=object)
     portfolio_cal['Cash'] = np.nan
@@ -193,65 +285,72 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
                 cash_after_rebalance = current_total_value * target_weights.get('Cash', 0.0)
             portfolio_cal.at[current_date, 'Holdings'] = new_holdings
             portfolio_cal.at[current_date, 'Cash'] = cash_after_rebalance
+            # --- Логирование ---
+            calendar_rebalance_log.append((current_date, 'calendar'))
+            # -----------------
+
+        # --- Логирование hover текста ПОСЛЕ всех действий за день ---
+        final_holdings = portfolio_cal.at[current_date, 'Holdings']
+        final_cash = portfolio_cal.at[current_date, 'Cash']
+        hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
+                                          assets_to_rebalance, all_price_assets)
+        calendar_hover_texts.append(hover_text)
+        if len(hover_dates) <= i: hover_dates.append(current_date) # Добавляем дату, если это первый цикл
+        # -----------------------------------------------------------
 
     calendar_rebalanced_values = portfolio_cal['Total_Value'].copy().rename('Calendar_Rebalanced_Value')
 
-    # --- 2. Логика ребалансировки ПО ПОРОГУ ИЗМЕНЕНИЯ ЦЕНЫ --- (без изменений)
-    portfolio_pb = pd.DataFrame(index=price_data.index)
-    portfolio_pb['Holdings'] = pd.Series(dtype=object)
-    portfolio_pb['Cash'] = np.nan
-    portfolio_pb['Total_Value'] = np.nan
-    # Доп. состояние: цены на момент последней ребалансировки
-    portfolio_pb['Prices_Last_Rebalance'] = pd.Series(dtype=object)
+    # --- 2. Логика ребалансировки ПО ПОРОГУ ОТКЛОНЕНИЯ ДОЛИ --- (изменено)
+    portfolio_wb = pd.DataFrame(index=price_data.index) # wb = weight band
+    portfolio_wb['Holdings'] = pd.Series(dtype=object)
+    portfolio_wb['Cash'] = np.nan
+    portfolio_wb['Total_Value'] = np.nan
+    # Удаляем Prices_Last_Rebalance
 
-    # Инициализация на первую дату
-    portfolio_pb.at[first_date, 'Holdings'] = initial_holdings_template.copy()
-    portfolio_pb.at[first_date, 'Cash'] = initial_cash
-    portfolio_pb.at[first_date, 'Total_Value'] = initial_total_value_check
-    # Запоминаем цены на первую дату (только для тех, где есть вес)
-    initial_prices_last_rebalance = {ticker: price_data.at[first_date, ticker]
-                                     for ticker in assets_to_rebalance
-                                     if not pd.isna(price_data.at[first_date, ticker])}
-    portfolio_pb.at[first_date, 'Prices_Last_Rebalance'] = initial_prices_last_rebalance
+    # Инициализация
+    portfolio_wb.at[first_date, 'Holdings'] = initial_holdings_template.copy()
+    portfolio_wb.at[first_date, 'Cash'] = initial_cash
+    portfolio_wb.at[first_date, 'Total_Value'] = initial_total_value_check
 
-    for i in range(1, len(portfolio_pb.index)):
-        current_date = portfolio_pb.index[i]
-        prev_date = portfolio_pb.index[i-1]
+    for i in range(1, len(portfolio_wb.index)):
+        current_date = portfolio_wb.index[i]
+        prev_date = portfolio_wb.index[i-1]
         # Копируем состояние
-        portfolio_pb.at[current_date, 'Holdings'] = portfolio_pb.at[prev_date, 'Holdings'].copy()
-        portfolio_pb.at[current_date, 'Cash'] = portfolio_pb.at[prev_date, 'Cash']
-        portfolio_pb.at[current_date, 'Prices_Last_Rebalance'] = portfolio_pb.at[prev_date, 'Prices_Last_Rebalance'].copy()
+        portfolio_wb.at[current_date, 'Holdings'] = portfolio_wb.at[prev_date, 'Holdings'].copy()
+        portfolio_wb.at[current_date, 'Cash'] = portfolio_wb.at[prev_date, 'Cash']
         # Пересчитываем стоимость
         current_total_value = 0.0
-        holdings_dict = portfolio_pb.at[current_date, 'Holdings']
+        holdings_dict = portfolio_wb.at[current_date, 'Holdings']
+        asset_values_today = {} # Сохраняем стоимости для расчета долей
         for ticker in all_price_assets:
             shares = holdings_dict.get(ticker, 0.0)
             price = price_data.at[current_date, ticker]
+            value = 0.0
             if shares > 0 and not pd.isna(price) and price > 0:
-                current_total_value += shares * price
-        current_total_value += portfolio_pb.at[current_date, 'Cash']
-        portfolio_pb.at[current_date, 'Total_Value'] = current_total_value
+                value = shares * price
+            asset_values_today[ticker] = value
+            current_total_value += value
+        current_total_value += portfolio_wb.at[current_date, 'Cash']
+        portfolio_wb.at[current_date, 'Total_Value'] = current_total_value
 
-        # Проверка условия ребалансировки по цене
+        # Проверка условия ребалансировки по ДОЛЕ
         trigger_rebalance = False
-        prices_last_rebalance = portfolio_pb.at[current_date, 'Prices_Last_Rebalance']
-        for ticker in assets_to_rebalance: # Проверяем только целевые активы
-            current_price = price_data.at[current_date, ticker]
-            last_rebalance_price = prices_last_rebalance.get(ticker)
-            if pd.isna(current_price) or pd.isna(last_rebalance_price) or last_rebalance_price <= 0:
-                continue # Пропускаем проверку, если цена некорректна
-            # Проверка порогов
-            if (current_price > last_rebalance_price * threshold_decimal_upper) or \
-               (current_price < last_rebalance_price * threshold_decimal_lower):
-                trigger_rebalance = True
-                break # Достаточно одного триггера
+        if current_total_value > 1e-6: # Избегаем деления на ноль
+            for ticker in assets_to_rebalance:
+                current_asset_value = asset_values_today.get(ticker, 0.0)
+                current_weight = current_asset_value / current_total_value
+                target_weight = target_weights.get(ticker, 0.0)
+                # Проверка абсолютного отклонения доли
+                if abs(current_weight - target_weight) > threshold_weight_abs_delta:
+                    trigger_rebalance = True
+                    break
 
         # Ребалансировка, если триггер сработал
         if trigger_rebalance:
+            # (стандартная логика ребалансировки, без обновления baseline цен)
             new_holdings = holdings_dict.copy()
             cash_after_rebalance = 0.0
             if current_total_value > 0:
-                # (логика ребалансировки как раньше)
                 for ticker in assets_to_rebalance:
                     target_val = current_total_value * target_weights.get(ticker, 0.0)
                     price = price_data.at[current_date, ticker]
@@ -260,36 +359,33 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
                         shares = target_val / price
                     new_holdings[ticker] = shares
                 cash_after_rebalance = current_total_value * target_weights.get('Cash', 0.0)
-                portfolio_pb.at[current_date, 'Holdings'] = new_holdings
-                portfolio_pb.at[current_date, 'Cash'] = cash_after_rebalance
-                # !!! Обновляем цены последней ребалансировки !!!
-                new_prices_last_rebalance = {ticker: price_data.at[current_date, ticker]
-                                             for ticker in assets_to_rebalance
-                                             if not pd.isna(price_data.at[current_date, ticker])}
-                portfolio_pb.at[current_date, 'Prices_Last_Rebalance'] = new_prices_last_rebalance
-            else:
-                 print(f"Warning: Cannot rebalance by price band on {current_date} due to zero/negative total value.")
+            portfolio_wb.at[current_date, 'Holdings'] = new_holdings
+            portfolio_wb.at[current_date, 'Cash'] = cash_after_rebalance
+            # --- Логирование ---
+            weight_band_rebalance_log.append((current_date, 'weight_band'))
+            # -----------------
 
-    price_band_rebalanced_values = portfolio_pb['Total_Value'].copy().rename('Price_Band_Value')
+        # --- Логирование hover текста ПОСЛЕ всех действий за день ---
+        final_holdings = portfolio_wb.at[current_date, 'Holdings']
+        final_cash = portfolio_wb.at[current_date, 'Cash']
+        hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
+                                          assets_to_rebalance, all_price_assets)
+        weight_band_hover_texts.append(hover_text)
+        # -----------------------------------------------------------
 
-    # --- 3. Логика КОМБИНИРОВАННОЙ ребалансировки (Календарь ИЛИ Цена % с НЕзависимым сбросом цены) --- (новая версия)
+    weight_band_rebalanced_values = portfolio_wb['Total_Value'].copy().rename('Weight_Band_Value') # Переименовано
+
+    # --- 3. Логика КОМБИНИРОВАННОЙ ребалансировки (Календарь ИЛИ Доля %) --- (изменено)
     portfolio_comb = pd.DataFrame(index=price_data.index)
     portfolio_comb['Holdings'] = pd.Series(dtype=object)
     portfolio_comb['Cash'] = np.nan
     portfolio_comb['Total_Value'] = np.nan
-    portfolio_comb['Prices_Last_Price_Trigger_Rebalance'] = pd.Series(dtype=object) # Отслеживаем цены для ЦЕНОВОГО триггера
+    # Удаляем Prices_Last_Price_Trigger_Rebalance
 
     # Инициализация
     portfolio_comb.at[first_date, 'Holdings'] = initial_holdings_template.copy()
     portfolio_comb.at[first_date, 'Cash'] = initial_cash
     portfolio_comb.at[first_date, 'Total_Value'] = initial_total_value_check
-    # Цены, от которых отсчитываем ПРОЦЕНТНОЕ изменение
-    initial_prices_last_price_trigger_rebalance = {ticker: price_data.at[first_date, ticker]
-                                                  for ticker in assets_to_rebalance
-                                                  if not pd.isna(price_data.at[first_date, ticker])}
-    portfolio_comb.at[first_date, 'Prices_Last_Price_Trigger_Rebalance'] = initial_prices_last_price_trigger_rebalance
-
-    # Используем те же календарные даты: rebalance_dates_cal
 
     for i in range(1, len(portfolio_comb.index)):
         current_date = portfolio_comb.index[i]
@@ -297,38 +393,39 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
         # Копируем состояние
         portfolio_comb.at[current_date, 'Holdings'] = portfolio_comb.at[prev_date, 'Holdings'].copy()
         portfolio_comb.at[current_date, 'Cash'] = portfolio_comb.at[prev_date, 'Cash']
-        portfolio_comb.at[current_date, 'Prices_Last_Price_Trigger_Rebalance'] = portfolio_comb.at[prev_date, 'Prices_Last_Price_Trigger_Rebalance'].copy()
         # Пересчитываем стоимость
         current_total_value = 0.0
         holdings_dict = portfolio_comb.at[current_date, 'Holdings']
+        asset_values_today_comb = {} # Для расчета долей
         for ticker in all_price_assets:
             shares = holdings_dict.get(ticker, 0.0)
             price = price_data.at[current_date, ticker]
+            value = 0.0
             if shares > 0 and not pd.isna(price) and price > 0:
-                current_total_value += shares * price
+                value = shares * price
+            asset_values_today_comb[ticker] = value
+            current_total_value += value
         current_total_value += portfolio_comb.at[current_date, 'Cash']
         portfolio_comb.at[current_date, 'Total_Value'] = current_total_value
 
         # Проверка триггеров
         calendar_trigger = current_date in rebalance_dates_cal
-        price_trigger = False
-        prices_baseline_for_price_trigger = portfolio_comb.at[current_date, 'Prices_Last_Price_Trigger_Rebalance']
-        for ticker in assets_to_rebalance:
-            current_price = price_data.at[current_date, ticker]
-            last_price_rebalance_price = prices_baseline_for_price_trigger.get(ticker)
-            if pd.isna(current_price) or pd.isna(last_price_rebalance_price) or last_price_rebalance_price <= 0:
-                continue
-            if (current_price > last_price_rebalance_price * threshold_decimal_upper) or \
-               (current_price < last_price_rebalance_price * threshold_decimal_lower):
-                price_trigger = True
-                break
+        weight_trigger = False
+        if current_total_value > 1e-6:
+            for ticker in assets_to_rebalance:
+                current_asset_value = asset_values_today_comb.get(ticker, 0.0)
+                current_weight = current_asset_value / current_total_value
+                target_weight = target_weights.get(ticker, 0.0)
+                if abs(current_weight - target_weight) > threshold_weight_abs_delta:
+                    weight_trigger = True
+                    break
 
         # Ребалансировка, если ЛЮБОЙ триггер сработал
-        if calendar_trigger or price_trigger:
+        if calendar_trigger or weight_trigger:
+            # (стандартная логика ребалансировки, без обновления baseline цен)
             new_holdings = holdings_dict.copy()
             cash_after_rebalance = 0.0
             if current_total_value > 0:
-                # (стандартная логика ребалансировки)
                 for ticker in assets_to_rebalance:
                     target_val = current_total_value * target_weights.get(ticker, 0.0)
                     price = price_data.at[current_date, ticker]
@@ -337,17 +434,25 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
                         shares = target_val / price
                     new_holdings[ticker] = shares
                 cash_after_rebalance = current_total_value * target_weights.get('Cash', 0.0)
-                portfolio_comb.at[current_date, 'Holdings'] = new_holdings
-                portfolio_comb.at[current_date, 'Cash'] = cash_after_rebalance
+            portfolio_comb.at[current_date, 'Holdings'] = new_holdings
+            portfolio_comb.at[current_date, 'Cash'] = cash_after_rebalance
+            # Удалено обновление цен триггера
+            # --- Логирование ---
+            event_type = 'weight_band' if weight_trigger else 'calendar'
+            combined_rebalance_log.append((current_date, event_type))
+            # -------------------
+            # (логика обновления baseline цен для weight_trigger)
+            if weight_trigger:
+                # ... обновление Prices_Last_Price_Trigger_Rebalance
+                pass # Оставил pass, так как сам код не меняется
 
-                # !!! Обновляем цены для ЦЕНОВОГО триггера ТОЛЬКО ЕСЛИ он сработал !!!
-                if price_trigger:
-                    new_prices_last_price_trigger_rebalance = {ticker: price_data.at[current_date, ticker]
-                                                               for ticker in assets_to_rebalance
-                                                               if not pd.isna(price_data.at[current_date, ticker])}
-                    portfolio_comb.at[current_date, 'Prices_Last_Price_Trigger_Rebalance'] = new_prices_last_price_trigger_rebalance
-            # else: # Убрал варнинг, т.к. он был и в других циклах
-            #      print(f"Warning: Cannot perform combined rebalance on {current_date} due to zero/negative total value.")
+        # --- Логирование hover текста ПОСЛЕ всех действий за день ---
+        final_holdings = portfolio_comb.at[current_date, 'Holdings']
+        final_cash = portfolio_comb.at[current_date, 'Cash']
+        hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
+                                          assets_to_rebalance, all_price_assets)
+        combined_hover_texts.append(hover_text)
+        # -----------------------------------------------------------
 
     combined_rebalanced_values = portfolio_comb['Total_Value'].copy().rename('Combined_Value')
 
@@ -383,13 +488,14 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
         individual_bh_results[f"BH_{ticker}"] = bh_individual_values
 
     # Собираем все результаты СТОИМОСТЕЙ
-    all_results_list = [calendar_rebalanced_values, price_band_rebalanced_values, combined_rebalanced_values, bh_target_values] + list(individual_bh_results.values())
+    all_results_list = [calendar_rebalanced_values, weight_band_rebalanced_values, combined_rebalanced_values, bh_target_values] + list(individual_bh_results.values())
     results = pd.concat(all_results_list, axis=1)
     results.ffill(inplace=True)
 
-    # --- Расчет рядов ПРОСАДОК для основных стратегий --- (добавляем Combined_Value)
+    # --- Расчет рядов ПРОСАДОК для основных стратегий ---
     drawdown_results_dict = {}
-    main_strategy_cols = ['Calendar_Rebalanced_Value', 'Price_Band_Value', 'Combined_Value', 'BH_Target_Value']
+    # Обновляем список, используя Weight_Band_Value
+    main_strategy_cols = ['Calendar_Rebalanced_Value', 'Weight_Band_Value', 'Combined_Value', 'BH_Target_Value']
     for col in main_strategy_cols:
         if col in results.columns:
             series = pd.to_numeric(results[col], errors='coerce').dropna()
@@ -402,8 +508,24 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
 
     drawdown_results = pd.concat(drawdown_results_dict, axis=1)
 
-    # Возвращаем КОРТЕЖ из двух DataFrame
-    return results, drawdown_results
+    # --- Формирование словаря логов --- 
+    rebalance_log = {
+        'Calendar_Rebalanced_Value': calendar_rebalance_log,
+        'Weight_Band_Value': weight_band_rebalance_log,
+        'Combined_Value': combined_rebalance_log
+    }
+    # ------------------------------------
+
+    # --- Формирование DataFrame для hover текста --- 
+    hover_weights_text = pd.DataFrame({
+        'Calendar_Rebalanced_Value': calendar_hover_texts,
+        'Weight_Band_Value': weight_band_hover_texts,
+        'Combined_Value': combined_hover_texts
+    }, index=hover_dates) # Используем собранные даты как индекс
+    # ---------------------------------------------
+
+    # Возвращаем ЧЕТЫРЕ элемента
+    return results, drawdown_results, rebalance_log, hover_weights_text
 
 # --- Функции расчета метрик ---
 
@@ -472,6 +594,22 @@ def _calculate_max_drawdown(series: pd.Series) -> (float, float, float):
 
     return max_drawdown_pct, max_drawdown_abs, peak_before_max_drawdown
 
+
+def _calculate_volatility(series: pd.Series) -> float:
+    """Рассчитывает аннуализированную волатильность."""
+    if series.empty or series.isna().all() or len(series) < 2:
+        return np.nan
+    daily_returns = series.pct_change().dropna()
+    if daily_returns.empty:
+        return np.nan
+    # Обработка inf/-inf, если они вдруг появятся
+    if np.isinf(daily_returns).any():
+         print("Warning: Inf values detected in daily returns for Volatility calculation.")
+         daily_returns = daily_returns.replace([np.inf, -np.inf], np.nan).dropna()
+         if daily_returns.empty:
+              return np.nan
+    volatility = daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
+    return volatility
 
 def _calculate_sharpe(series: pd.Series, risk_free_rate_annual: float) -> float:
     """Рассчитывает коэффициент Шарпа (аннуализированный)."""
@@ -567,88 +705,78 @@ def _calculate_recovery_factor(series: pd.Series, max_drawdown_abs: float) -> fl
      return recovery_factor
 
 
-@st.cache_data # Кэшируем расчет метрик
-def calculate_metrics(backtest_results: pd.DataFrame, risk_free_rate_annual: float) -> Dict[str, Dict[str, float]]:
-    """
-    Рассчитывает набор метрик эффективности для результатов бэктеста.
+@st.cache_data
+def calculate_metrics(backtest_results: pd.DataFrame, risk_free_rate_annual: float,
+                        rebalance_log: Dict[str, List[Tuple[Timestamp, str]]]) -> Dict[str, Dict[str, float]]:
+    """Рассчитывает основные метрики производительности для каждой стратегии.
 
     Args:
-        backtest_results (pd.DataFrame): DataFrame с результатами бэктеста для всех стратегий
-                                           (колонки 'Rebalanced_Value', 'BH_Target_Value', 'BH_SPY', 'BH_GLD', ...).
-        risk_free_rate_annual (float): Годовая безрисковая ставка (десятичная дробь, например, 0.035).
+        backtest_results (pd.DataFrame): DataFrame со стоимостью портфелей.
+        risk_free_rate_annual (float): Годовая безрисковая ставка (десятичная дробь).
+        rebalance_log (Dict[str, List[Tuple[Timestamp, str]]]): Лог ребалансировок.
 
     Returns:
-        Dict[str, Dict[str, float]]: Словарь с метриками для всех стратегий.
-                                       Ключи метрик: 'Start Value', 'End Value', 'CAGR',
-                                       'Max Drawdown %', 'Volatility', 'Sharpe Ratio',
-                                       'Sortino Ratio', 'Recovery Factor'.
-                                       Значения могут быть np.nan, если расчет невозможен.
+        Dict[str, Dict[str, float]]: Словарь метрик для каждой стратегии.
     """
     metrics = {}
-    strategies = {}
+    internal_names_map = {
+        'Ребаланс (Календарь)': 'Calendar_Rebalanced_Value',
+        'Ребаланс (Доля %)': 'Weight_Band_Value', # Обновлено для соответствия новому имени
+        'Ребаланс (Комби)': 'Combined_Value',
+        'B&H (Целевые веса)': 'BH_Target_Value'
+    }
 
-    # Динамически определяем стратегии и их отображаемые имена
-    strategy_names = {}
-    if 'Calendar_Rebalanced_Value' in backtest_results.columns:
-        strategy_names['Calendar_Rebalanced_Value'] = 'Ребаланс (Календарь)'
-    if 'Price_Band_Value' in backtest_results.columns:
-        strategy_names['Price_Band_Value'] = 'Ребаланс (Цена %)'
-    if 'Combined_Value' in backtest_results.columns:
-        strategy_names['Combined_Value'] = 'Ребаланс (Комби)'
-    if 'BH_Target_Value' in backtest_results.columns:
-        strategy_names['BH_Target_Value'] = 'B&H (Целевые веса)'
-    # Добавляем индивидуальные B&H
+    # Добавляем B&H для отдельных тикеров в карту (динамически)
     for col in backtest_results.columns:
         if col.startswith('BH_') and col != 'BH_Target_Value':
-            ticker = col.split('_', 1)[1]
-            strategy_names[col] = f'B&H ({ticker})'
+            ticker_name = col.split('_', 1)[1]
+            display_name = f"B&H ({ticker_name})"
+            internal_names_map[display_name] = col
 
-    metric_keys = ['Start Value', 'End Value', 'CAGR', 'Max Drawdown %', 'Max Drawdown Abs $', 'Peak Before MDD', 'Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Recovery Factor']
-    nan_metrics = {key: np.nan for key in metric_keys}
+    for name, internal_col_name in internal_names_map.items():
+        if internal_col_name in backtest_results.columns:
+            series = pd.to_numeric(backtest_results[internal_col_name], errors='coerce').dropna()
+            if series.empty:
+                metrics[name] = {k: np.nan for k in [
+                    'Start Value', 'End Value', 'CAGR', 'Max Drawdown %', 'Max Drawdown Abs $', 'Peak Before MDD',
+                    'Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Recovery Factor', 'Rebalance Count' # Вернули Rebalance Count
+                ]}
+                continue
 
-    for col_name, display_name in strategy_names.items():
-        if col_name in backtest_results.columns:
-            strategies[display_name] = backtest_results[col_name]
+            start_value = series.iloc[0] if not series.empty else np.nan
+            end_value = series.iloc[-1] if not series.empty else np.nan
+            cagr = _calculate_cagr(series)
+            mdd_pct, mdd_abs, peak_before_mdd = _calculate_max_drawdown(series)
+            volatility = _calculate_volatility(series)
+            sharpe = _calculate_sharpe(series, risk_free_rate_annual)
+            sortino = _calculate_sortino(series, risk_free_rate_annual)
+            recovery_factor = _calculate_recovery_factor(series, mdd_abs)
+
+            rebalance_count = np.nan # Инициализируем как NaN
+            # --- Добавляем расчет количества ребалансировок ---
+            if internal_col_name and internal_col_name in rebalance_log: # Проверяем, есть ли лог для этой стратегии
+                rebalance_count = len(rebalance_log[internal_col_name])
+            elif name.startswith('B&H'): # Для стратегий B&H ставим 0
+                 rebalance_count = 0
+            # ---------------------------------------------------
+
+            metrics[name] = {
+                'Start Value': start_value,
+                'End Value': end_value,
+                'CAGR': cagr,
+                'Max Drawdown %': mdd_pct * 100 if not pd.isna(mdd_pct) else np.nan,
+                'Max Drawdown Abs $': mdd_abs,
+                'Peak Before MDD': peak_before_mdd,
+                'Volatility': volatility,
+                'Sharpe Ratio': sharpe,
+                'Sortino Ratio': sortino,
+                'Recovery Factor': recovery_factor,
+                'Rebalance Count': rebalance_count # Добавляем метрику
+            }
         else:
-            # Если стратегии нет, создаем пустую серию с NaN чтобы не ломать расчеты
-            strategies[display_name] = pd.Series(np.nan, index=backtest_results.index)
-
-    if not strategies:
-        print("Error: Backtest results DataFrame does not contain any valid strategy columns.")
-        return {name: nan_metrics.copy() for name in strategy_names.values()}
-
-    for name, series in strategies.items():
-        valid_series = series.dropna()
-        if valid_series.empty or len(valid_series) < 2:
-            metrics[name] = nan_metrics.copy()
-            if not series.empty:
-                 metrics[name]['Start Value'] = series.iloc[0] if not pd.isna(series.iloc[0]) else np.nan
-                 metrics[name]['End Value'] = series.iloc[-1] if not pd.isna(series.iloc[-1]) else np.nan
-            continue
-        start_value = valid_series.iloc[0]
-        end_value = valid_series.iloc[-1]
-        cagr = _calculate_cagr(valid_series)
-        max_drawdown_pct, max_drawdown_abs, peak = _calculate_max_drawdown(valid_series)
-        volatility = valid_series.pct_change().std() * np.sqrt(TRADING_DAYS_PER_YEAR)
-        sharpe = _calculate_sharpe(valid_series, risk_free_rate_annual)
-        sortino = _calculate_sortino(valid_series, risk_free_rate_annual)
-        recovery = _calculate_recovery_factor(valid_series, max_drawdown_abs)
-
-        metrics[name] = {
-            'Start Value': start_value if not pd.isna(start_value) else np.nan,
-            'End Value': end_value if not pd.isna(end_value) else np.nan,
-            'CAGR': cagr,
-            'Max Drawdown %': max_drawdown_pct * 100 if not pd.isna(max_drawdown_pct) else np.nan,
-            'Max Drawdown Abs $': max_drawdown_abs if not pd.isna(max_drawdown_abs) else np.nan,
-            'Peak Before MDD': peak if not pd.isna(peak) else np.nan,
-            'Volatility': volatility * 100 if not pd.isna(volatility) else np.nan,
-            'Sharpe Ratio': sharpe,
-            'Sortino Ratio': sortino,
-            'Recovery Factor': recovery
-        }
-
-    for display_name in strategy_names.values():
-        if display_name not in metrics:
-            metrics[display_name] = nan_metrics.copy()
+            metrics[name] = {k: np.nan for k in [
+                'Start Value', 'End Value', 'CAGR', 'Max Drawdown %', 'Max Drawdown Abs $', 'Peak Before MDD',
+                'Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Recovery Factor', 'Rebalance Count' # Вернули Rebalance Count
+            ]}
 
     return metrics 

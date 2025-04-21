@@ -277,26 +277,42 @@ if run_button:
              st.error(f"Не удалось загрузить данные для всех указанных активов. Проверьте: {tickers}")
              st.stop()
 
-        with st.spinner('Выполнение бэктеста стратегий...'):
-            # Получаем ОБА DataFrame из run_backtest
-            backtest_results, drawdown_results = core.run_backtest(price_data, normalized_weights,
-                                                  rebalance_freq_display, initial_capital,
-                                                  price_change_threshold)
-        
-        if backtest_results is None or backtest_results.empty:
-            st.error("Ошибка при выполнении бэктеста.")
+        with st.spinner('Запуск бэктеста...'):
+            # Запускаем бэктест
+            backtest_output = core.run_backtest(
+                price_data=price_data,
+                target_weights=normalized_weights,
+                rebalance_freq=rebalance_freq_display,
+                initial_capital=initial_capital,
+                weight_deviation_threshold=price_change_threshold # Передаем новый параметр
+            )
+            if backtest_output is None:
+                st.error("Ошибка при выполнении бэктеста.")
+                st.stop()
+            # Распаковываем ЧЕТЫРЕ результата
+            backtest_results, drawdown_results, rebalance_log, hover_weights_text = backtest_output
+
+        # 2.5 Расчет метрик
+        if backtest_results is None or drawdown_results is None:
+            st.error("Ошибка: Результаты бэктеста или просадок отсутствуют после выполнения.")
             st.stop()
 
-        with st.spinner('Расчет итоговых метрик...'):
-            # Передаем только результаты стоимостей в метрики
-            metrics = core.calculate_metrics(backtest_results, rf_rate_decimal)
-        
-        if metrics is None:
-            st.error("Ошибка при расчете метрик.")
+        try:
+            # Вычисляем безрисковую ставку в виде десятичной дроби
+            rf_rate_decimal = rf_rate_percent / 100.0
+
+            # Рассчитываем метрики, передавая лог ребалансировок
+            with st.spinner('Расчет итоговых метрик...'):
+                # Передаем только результаты стоимостей в метрики
+                metrics = core.calculate_metrics(backtest_results, rf_rate_decimal, rebalance_log)
+
+        except Exception as e:
+            st.error(f"Произошла непредвиденная ошибка при расчете метрик: {e}")
+            st.exception(e)
             st.stop()
-            
+
     except Exception as e:
-        st.error(f"Произошла непредвиденная ошибка: {e}")
+        st.error(f"Произошла непредвиденная ошибка при загрузке данных: {e}")
         st.exception(e)
         st.stop()
 
@@ -312,7 +328,7 @@ if run_button:
 
     with st.container():
         st.subheader("2. Динамика стоимости портфелей")
-        equity_fig = plots.plot_equity_curves(backtest_results, selected_ticker_map)
+        equity_fig = plots.plot_equity_curves(backtest_results, selected_ticker_map, hover_weights_text)
         if equity_fig:
             st.plotly_chart(equity_fig, use_container_width=True)
         else:
@@ -325,7 +341,7 @@ if run_button:
 
             # Определяем порядок стратегий
             # Восстанавливаем Комби в main_order
-            main_order = ['Ребаланс (Календарь)', 'Ребаланс (Цена %)', 'Ребаланс (Комби)', 'B&H (Целевые веса)']
+            main_order = ['Ребаланс (Календарь)', 'Ребаланс (Доля %)', 'Ребаланс (Комби)', 'B&H (Целевые веса)']
             individual_bh_order = sorted(
                 [name for name in metrics_df.index if name.startswith('B&H (') and name != 'B&H (Целевые веса)'],
                 key=lambda x: x.split('(')[1]
@@ -357,11 +373,11 @@ if run_button:
                 metrics_df_display = metrics_df_display.drop(columns=[col for col in columns_to_drop if col in metrics_df_display.columns])
 
                 # Названия колонок (финальные)
-                # Убедимся, что количество имен соответствует оставшимся колонкам
+                # Добавляем "Кол-во ребал." в список названий
                 final_columns = [
                     "Конечная стоимость", "CAGR (год. дох-ть)",
                     "Макс. просадка", "Волатильность (год.)", "Коэф. Шарпа",
-                    "Коэф. Сортино", "Фактор восст."
+                    "Коэф. Сортино", "Фактор восст.", "Кол-во ребал."
                 ]
                 if len(metrics_df_display.columns) == len(final_columns):
                      metrics_df_display.columns = final_columns
@@ -371,6 +387,11 @@ if run_button:
                      # rename_map = dict(zip(metrics_df_display.columns[:len(final_columns)], final_columns))
                      # metrics_df_display = metrics_df_display.rename(columns=rename_map)
                      pass # Оставляем оригинальные имена, если не совпадает
+
+                # Форматирование Rebalance Count
+                # Убедимся, что колонка существует перед форматированием
+                if 'Rebalance Count' in metrics_df_display.columns:
+                     metrics_df_display['Rebalance Count'] = metrics_df['Rebalance Count'].map(lambda x: "{:.0f}".format(x) if not pd.isna(x) else "-") # Отображаем как целое или прочерк
 
                 st.dataframe(metrics_df_display, use_container_width=True)
             else:
