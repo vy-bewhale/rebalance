@@ -53,16 +53,26 @@ st.subheader("Интерактивный Бэктестер Ребалансир
 COMMON_TICKERS = {
     # Акции США
     'SPY': 'S&P 500 ETF', 'QQQ': 'Nasdaq 100 ETF', 'IWM': 'Russell 2000 ETF', 'DIA': 'Dow Jones ETF',
+    'XLK': 'Technology Sector SPDR Fund', 'XLF': 'Financial Sector SPDR Fund',
+    'XLP': 'Consumer Staples Sel Sec SPDR',
+    'XLV': 'Healthcare Sector SPDR Fund',
+    # Акции США (Крупные компании)
+    'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc. (Class A)', 'AMZN': 'Amazon.com, Inc.',
+    'BRK-B': 'Berkshire Hathaway Inc. (Cl B)',
+    'NVDA': 'NVIDIA Corporation', 'MCD': "McDonald's Corporation", 'KO': 'The Coca-Cola Company',
+    'JNJ': 'Johnson & Johnson', 'JPM': 'JPMorgan Chase & Co.',
     # Акции Развитые страны
     'EFA': 'MSCI EAFE ETF', 'VEA': 'FTSE Developed Markets ETF',
     # Акции Развивающиеся рынки
     'EEM': 'MSCI Emerging Markets ETF', 'VWO': 'FTSE Emerging Markets ETF',
     # Облигации США (Казначейские)
     'IEF': '7-10 Year Treasury Bond ETF', 'TLT': '20+ Year Treasury Bond ETF', 'SHY': '1-3 Year Treasury Bond ETF',
+    'TIP': 'TIPS Bond ETF',
     # Облигации США (Корпоративные/Совокупные)
     'AGG': 'US Aggregate Bond ETF', 'LQD': 'Investment Grade Corporate Bond ETF', 'HYG': 'High Yield Corporate Bond ETF',
-    # Облигации Международные
+    # Облигации Международные / Развивающиеся рынки
     'BNDX': 'Total Intl Bond ETF (hedged)',
+    'EMB': 'USD Emerging Markets Bond ETF',
     # Золото
     'GLD': 'Gold ETF',
     # Недвижимость
@@ -71,27 +81,37 @@ COMMON_TICKERS = {
     'DBC': 'Commodity Index Tracking Fund',
     # Криптовалюты
     'BTC-USD': 'Bitcoin USD',
+    'ETH-USD': 'Ethereum USD',
+    'LTC-USD': 'Litecoin USD',
     # Валюты
     'FXE': 'Euro ETF (vs USD)',
     'FXY': 'Japanese Yen ETF (vs USD)',
     'FXB': 'British Pound ETF (vs USD)'
-    # Добавить еще, если нужно
 }
 
 # Группы активов (сопоставление тикера с названием группы)
 ASSET_GROUPS = {
     'SPY': 'Акции США', 'QQQ': 'Акции США', 'IWM': 'Акции США', 'DIA': 'Акции США',
+    'XLK': 'Акции США (Сектор)', 'XLF': 'Акции США (Сектор)',
+    'XLP': 'Акции США (Сектор)',
+    'XLV': 'Акции США (Сектор)',
+    'AAPL': 'Акции США (Крупн. комп.)', 'MSFT': 'Акции США (Крупн. комп.)', 'GOOGL': 'Акции США (Крупн. комп.)', 'AMZN': 'Акции США (Крупн. комп.)',
+    'BRK-B': 'Акции США (Крупн. комп.)',
+    'NVDA': 'Акции США (Крупн. комп.)', 'MCD': 'Акции США (Крупн. комп.)', 'KO': 'Акции США (Крупн. комп.)',
+    'JNJ': 'Акции США (Крупн. комп.)', 'JPM': 'Акции США (Крупн. комп.)',
     'EFA': 'Акции Разв.', 'VEA': 'Акции Разв.',
-    'EEM': 'Акции Разв.', 'VWO': 'Акции Разв.',
+    'EEM': 'Акции Развивш.', 'VWO': 'Акции Развивш.',
     'IEF': 'Обл. США (Казн.)', 'TLT': 'Обл. США (Казн.)', 'SHY': 'Обл. США (Казн.)',
+    'TIP': 'Обл. США (TIPS)',
     'AGG': 'Обл. США (Сумм.)', 'LQD': 'Обл. США (Корп.)', 'HYG': 'Обл. США (ВДО)',
     'BNDX': 'Обл. Межд.',
+    'EMB': 'Обл. Развивш.',
     'GLD': 'Золото',
     'VNQ': 'Недвиж.',
     'DBC': 'Сырье',
-    'BTC-USD': 'Крипто',
+    'BTC-USD': 'Крипто', 'ETH-USD': 'Крипто', 'LTC-USD': 'Крипто',
     'FXE': 'Валюты', 'FXY': 'Валюты', 'FXB': 'Валюты',
-    'Cash': 'Кэш' # Добавляем группу для Кэша
+    'Cash': 'Кэш'
 }
 
 # Цвета для групп (можно настроить) - используем палитру Plotly по умолчанию
@@ -102,134 +122,133 @@ colors = px.colors.qualitative.Plotly # или Set3, Pastell, etc.
 GROUP_COLORS = {group: colors[i % len(colors)] for i, group in enumerate(unique_groups)}
 GROUP_COLORS['Кэш'] = '#AAAAAA' # Серый для кэша
 
+# --- Генерация опций для multiselect в формате "ТИКЕР - Название" ---
+options_formatted = [f"{ticker} - {name}" for ticker, name in COMMON_TICKERS.items()]
+
 # --- Callback для обновления весов ---
 def adjust_weights():
-    # Получаем текущие выбранные НАЗВАНИЯ из состояния мултиселекта
-    current_selected_names = st.session_state.selected_assets_multiselect
-    # Получаем соответствующие ТИКЕРЫ
-    current_tickers = [ticker for ticker, name in COMMON_TICKERS.items() if name in current_selected_names]
+    # Получаем текущие выбранные ФОРМАТИРОВАННЫЕ строки из состояния мултиселекта
+    current_selected_formatted = st.session_state.selected_assets_multiselect
+    # Парсим тикеры из форматированных строк
+    current_tickers = [s.split(' - ')[0] for s in current_selected_formatted]
     # Список для установки весов
     assets_for_weighting = current_tickers + ['Cash']
     num_assets_plus_cash = len(assets_for_weighting)
     new_default_weight = 100.0 / num_assets_plus_cash if num_assets_plus_cash > 0 else 0
 
-    # Обновляем веса в session_state для текущего выбора
-    for asset in assets_for_weighting:
-        st.session_state[f"weight_{asset}"] = new_default_weight
-
-    # Опционально: Очистить состояние весов для тикеров, которые были убраны
-    # (но это не обязательно, так как виджеты для них не будут отображаться)
-    # all_possible_weights = {f"weight_{ticker}" for ticker in COMMON_TICKERS} | {"weight_Cash"}
-    # current_weight_keys = {f"weight_{asset}" for asset in assets_for_weighting}
-    # for key in all_possible_weights - current_weight_keys:
-    #     if key in st.session_state:
-    #         del st.session_state[key]
+    # Обновляем веса в session_state для текущего выбора (используем ТИКЕРЫ как ключ)
+    for ticker in assets_for_weighting: # Используем тикеры
+        st.session_state[f"weight_{ticker}"] = new_default_weight # Ключ по тикеру
 
 # --- Боковая панель для ввода параметров ---
-st.sidebar.header("Параметры Бэктеста")
+# Убираем общий заголовок, он будет в expander
+# st.sidebar.header("Параметры Бэктеста")
 
-# Ввод тикеров через multiselect
-default_tickers = ['SPY', 'GLD', 'IEF', 'BTC-USD'] # Изменил дефолт
-default_names = [COMMON_TICKERS.get(t, t) for t in default_tickers]
+with st.sidebar.expander("Основные параметры", expanded=True): # Раскрыт по умолчанию
+    # Ввод тикеров через multiselect
+    default_tickers = ['SPY', 'GLD', 'IEF', 'BTC-USD'] # Оставляем тикеры как есть
+    # Генерируем форматированные названия по умолчанию
+    default_names_formatted = [f"{t} - {COMMON_TICKERS.get(t, t)}" for t in default_tickers]
 
-# Инициализируем веса по умолчанию в session_state при первом запуске
-if 'selected_assets_multiselect' not in st.session_state:
-    st.session_state.selected_assets_multiselect = default_names
-    adjust_weights() # Вызываем для установки начальных весов
+    # Инициализируем веса по умолчанию в session_state при первом запуске
+    if 'selected_assets_multiselect' not in st.session_state:
+        st.session_state.selected_assets_multiselect = default_names_formatted # Сохраняем ФОРМАТИРОВАННЫЕ имена
+        adjust_weights() # Вызываем для установки начальных весов по ТИКЕРАМ
 
-selected_names = st.sidebar.multiselect(
-    "Выберите активы",
-    options=list(COMMON_TICKERS.values()), # Показываем названия
-    key="selected_assets_multiselect", # Ключ для доступа к состоянию и для callback
-    on_change=adjust_weights # Назначаем callback
-)
+    selected_names_formatted = st.multiselect( # Убрал st.sidebar, т.к. уже внутри with
+        "Выберите активы",
+        options=options_formatted, # Используем форматированные опции
+        key="selected_assets_multiselect", # Ключ для доступа к состоянию и для callback
+        on_change=adjust_weights # Назначаем callback
+    )
 
-# Получаем тикеры из выбранных названий (уже берется из session_state)
-# tickers = [ticker for ticker, name in COMMON_TICKERS.items() if name in selected_names]
-# Вместо этого, используем то, что сейчас в состоянии (callback уже обновил)
-tickers = [ticker for ticker, name in COMMON_TICKERS.items() if name in st.session_state.selected_assets_multiselect]
+    # Получаем ТИКЕРЫ из выбранных форматированных строк
+    tickers = [s.split(' - ')[0] for s in selected_names_formatted]
 
-# Создаем карту тикер -> название для выбранных
-selected_ticker_map = {ticker: name for ticker, name in COMMON_TICKERS.items() if name in st.session_state.selected_assets_multiselect}
+    # Создаем карту тикер -> название для выбранных (из COMMON_TICKERS по тикерам)
+    selected_ticker_map = {ticker: COMMON_TICKERS[ticker] for ticker in tickers if ticker in COMMON_TICKERS}
 
-# Создаем словарь цветов для выбранных тикеров
-selected_ticker_colors = {
-    ticker: GROUP_COLORS.get(ASSET_GROUPS.get(ticker, 'Другое'), '#333333') # Цвет по умолчанию, если нет группы
-    for ticker in tickers
-}
+    # Создаем словарь цветов для выбранных тикеров
+    selected_ticker_colors = {
+        ticker: GROUP_COLORS.get(ASSET_GROUPS.get(ticker, 'Другое'), '#333333')
+        for ticker in tickers
+    }
 
-# Ввод дат
-default_end_date = datetime.date.today()
-default_start_date = default_end_date - datetime.timedelta(days=10*365) # Примерно 10 лет назад
-start_date = st.sidebar.date_input("Начальная дата", default_start_date)
-end_date = st.sidebar.date_input("Конечная дата", default_end_date)
+    # Ввод дат
+    default_end_date = datetime.date.today()
+    default_start_date = default_end_date - datetime.timedelta(days=10*365) # Примерно 10 лет назад
+    start_date = st.date_input("Начальная дата", default_start_date) # Убрал st.sidebar
+    end_date = st.date_input("Конечная дата", default_end_date) # Убрал st.sidebar
 
-# Выбор частоты ребалансировки
-rebalance_freq_options = {'ME': 'Ежемесячно', 'QE': 'Ежеквартально', 'YE': 'Ежегодно'} # Обновлено на новые коды
-rebalance_freq_display = st.sidebar.selectbox(
-    "Частота ребалансировки (Календарная)", # Добавил уточнение
-    options=list(rebalance_freq_options.keys()),
-    format_func=lambda x: rebalance_freq_options[x]
-)
+    # Выбор частоты ребалансировки
+    rebalance_freq_options = {'ME': 'Ежемесячно', 'QE': 'Ежеквартально', 'YE': 'Ежегодно'} # Обновлено на новые коды
+    rebalance_freq_display = st.selectbox( # Убрал st.sidebar
+        "Частота ребалансировки (Календарная)", # Добавил уточнение
+        options=list(rebalance_freq_options.keys()),
+        format_func=lambda x: rebalance_freq_options[x]
+    )
 
-# Новый ввод: Порог изменения цены для ребалансировки
-price_change_threshold = st.sidebar.number_input(
-    "Порог ребалансировки по цене (%)",
-    min_value=1.0,
-    max_value=100.0,
-    value=10.0, # Значение по умолчанию 10%
-    step=0.5,
-    help="Ребалансировка сработает, если цена ЛЮБОГО актива изменится на этот % с момента последней ребалансировки."
-)
+    # Новый ввод: Порог изменения **доли** для ребалансировки (ИСПРАВЛЕНО НАЗВАНИЕ И HELP)
+    price_change_threshold = st.number_input( # Убрал st.sidebar
+        "Порог отклон. доли для ребал. (%)", # Изменено
+        min_value=1.0,
+        max_value=100.0,
+        value=10.0,
+        step=0.5,
+        help="Ребалансировка сработает, если ДОЛЯ ЛЮБОГО актива отклонится от целевой более чем на этот %." # Изменено
+    )
 
-# Безрисковая ставка
-rf_rate_percent = st.sidebar.number_input("Безрисковая ставка (% годовых)", min_value=0.0, max_value=50.0, value=1.0, step=0.1)
-rf_rate_decimal = rf_rate_percent / 100.0
+    # Безрисковая ставка
+    rf_rate_percent = st.number_input("Безрисковая ставка (% годовых)", min_value=0.0, max_value=50.0, value=1.0, step=0.1) # Убрал st.sidebar
+    rf_rate_decimal = rf_rate_percent / 100.0
 
-# Начальный капитал
-initial_capital = 100000.0
-st.sidebar.markdown(f"**Начальный капитал:** `${initial_capital:,.0f}`")
+    # Начальный капитал (вне expander, т.к. он не меняется)
+    initial_capital = 100000.0
+    st.sidebar.markdown(f"**Начальный капитал:** `${initial_capital:,.0f}`")
 
-# Ввод весов
-st.sidebar.subheader("Целевые веса (%)")
-target_weights_input: Dict[str, float] = {}
-if tickers:
-    cols = st.sidebar.columns(2)
-    col_idx = 0
-    assets_for_weighting = tickers + ['Cash']
+    # Ввод весов в отдельном expander
+    with st.sidebar.expander("Целевые веса (%)", expanded=True): # Раскрыт по умолчанию
+        # Убираем st.sidebar.subheader("Целевые веса (%)\")
+        target_weights_input: Dict[str, float] = {}
+        if tickers:
+            cols = st.columns(2) # Убрал st.sidebar
+            col_idx = 0
+            assets_for_weighting = tickers + ['Cash']
 
-    for asset in assets_for_weighting: # asset здесь - это тикер (SPY, GLD...) или 'Cash'
-        session_key = f"weight_{asset}"
-        # Убедимся, что ключ существует в состоянии (это должно делаться в callback)
-        if session_key not in st.session_state:
-             # Эта логика должна быть в adjust_weights, но на всякий случай оставим fallback
-             num_assets_plus_cash = len(tickers) + 1
-             fallback_default = 100.0 / num_assets_plus_cash if num_assets_plus_cash > 0 else 0
-             st.session_state[session_key] = fallback_default
+            for asset in assets_for_weighting: # asset здесь - это тикер (SPY, GLD...) или 'Cash'
+                session_key = f"weight_{asset}"
+                # Убедимся, что ключ существует в состоянии (это должно делаться в callback)
+                if session_key not in st.session_state:
+                     # Эта логика должна быть в adjust_weights, но на всякий случай оставим fallback
+                     num_assets_plus_cash = len(tickers) + 1
+                     fallback_default = 100.0 / num_assets_plus_cash if num_assets_plus_cash > 0 else 0
+                     st.session_state[session_key] = fallback_default
 
-        with cols[col_idx % len(cols)]:
-            st.markdown(f"<small>Вес {asset}</small>", unsafe_allow_html=True)
-            # Убираем key и передаем value явно из session_state
-            weight = st.number_input(
-                label=f"Вес {asset}", # Label нужен для внутренней идентификации, но он скрыт
-                label_visibility="collapsed",
-                min_value=0.0,
-                max_value=100.0,
-                value=st.session_state[session_key], # Явно берем значение из состояния
-                step=1.0
-                # key=session_key # Убрали key, чтобы избежать конфликта
-            )
-            target_weights_input[asset] = weight / 100.0 # Собираем значение как и раньше
-        col_idx += 1
+                with cols[col_idx % len(cols)]:
+                    st.markdown(f"<small>Вес {asset}</small>", unsafe_allow_html=True)
+                    # Убираем key и передаем value явно из session_state
+                    weight = st.number_input(
+                        label=f"Вес {asset}", # Label нужен для внутренней идентификации, но он скрыт
+                        label_visibility="collapsed",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=st.session_state[session_key], # Явно берем значение из состояния
+                        step=1.0
+                        # key=session_key # Убрали key, чтобы избежать конфликта
+                    )
+                    target_weights_input[asset] = weight / 100.0 # Собираем значение как и раньше
+                col_idx += 1
 
-    # Показываем сумму весов и предупреждение
-    # Сумму считаем из ТЕКУЩИХ значений виджетов (target_weights_input), а не из session_state
-    current_sum_weights = sum(target_weights_input.values()) * 100
-    st.sidebar.metric("Текущая сумма весов", f"{current_sum_weights:.1f}%")
-    if abs(current_sum_weights - 100.0) > 0.1:
-        st.sidebar.warning("Сумма весов должна быть равна 100%!")
+            # Показываем сумму весов и предупреждение
+            # Сумму считаем из ТЕКУЩИХ значений виджетов (target_weights_input), а не из session_state
+            current_sum_weights = sum(target_weights_input.values()) * 100
+            st.metric("Текущая сумма весов", f"{current_sum_weights:.1f}%") # Убрал st.sidebar
+            if abs(current_sum_weights - 100.0) > 0.1:
+                st.warning("Сумма весов должна быть равна 100%!") # Убрал st.sidebar
+        else:
+            st.text("Выберите активы для задания весов.") # Сообщение, если тикеры не выбраны
 
-# Кнопка запуска
+# Кнопка запуска (остается вне expander)
 run_button = st.sidebar.button("Запустить Бэктест")
 
 # --- Основная область для вывода результатов ---
@@ -267,7 +286,7 @@ if run_button:
     try:
         with st.spinner('Загрузка исторических данных...'):
             price_data = core.load_price_data(tickers, start_date, end_date)
-        
+
         if price_data is None or price_data.empty:
             st.error("Не удалось загрузить данные. Проверьте выбранные активы и период.")
             st.stop()
@@ -297,45 +316,41 @@ if run_button:
             st.error("Ошибка: Результаты бэктеста или просадок отсутствуют после выполнения.")
             st.stop()
 
-        try:
-            # Вычисляем безрисковую ставку в виде десятичной дроби
-            rf_rate_decimal = rf_rate_percent / 100.0
+        with st.spinner('Расчет итоговых метрик...'):
+            try:
+                # Вычисляем безрисковую ставку в виде десятичной дроби
+                rf_rate_decimal = rf_rate_percent / 100.0
 
-            # Рассчитываем метрики, передавая лог ребалансировок
-            with st.spinner('Расчет итоговых метрик...'):
+                # Рассчитываем метрики, передавая лог ребалансировок
                 # Передаем только результаты стоимостей в метрики
                 metrics = core.calculate_metrics(backtest_results, rf_rate_decimal, rebalance_log)
-
-        except Exception as e:
-            st.error(f"Произошла непредвиденная ошибка при расчете метрик: {e}")
-            st.exception(e)
-            st.stop()
+            except Exception as e:
+                st.error(f"Произошла непредвиденная ошибка при расчете метрик: {e}")
+                st.exception(e)
+                st.stop()
 
     except Exception as e:
-        st.error(f"Произошла непредвиденная ошибка при загрузке данных: {e}")
+        st.error(f"Произошла непредвиденная ошибка при загрузке данных или бэктеста: {e}") # Обновил сообщение об ошибке
         st.exception(e)
         st.stop()
 
     # 3. Отображение результатов
-    # Оборачиваем каждую секцию в контейнер
-    with st.container():
-        st.subheader("1. Нормализованные цены активов")
+    # Оборачиваем каждую секцию в expander
+    with st.expander("1. Нормализованные цены активов", expanded=True):
         prices_fig = plots.plot_normalized_prices(price_data, selected_ticker_map)
         if prices_fig:
             st.plotly_chart(prices_fig, use_container_width=True)
         else:
             st.warning("Не удалось построить график нормализованных цен.")
 
-    with st.container():
-        st.subheader("2. Динамика стоимости портфелей")
+    with st.expander("2. Динамика стоимости портфелей", expanded=True):
         equity_fig = plots.plot_equity_curves(backtest_results, selected_ticker_map, hover_weights_text)
         if equity_fig:
             st.plotly_chart(equity_fig, use_container_width=True)
         else:
             st.warning("Не удалось построить график эквити.")
 
-    with st.container():
-        st.subheader("3. Итоговые метрики")
+    with st.expander("3. Итоговые метрики", expanded=True):
         if metrics:
             metrics_df = pd.DataFrame(metrics).T
 
@@ -350,10 +365,25 @@ if run_button:
             # Переиндексируем и удаляем строки, где все значения NaN
             metrics_df = metrics_df.reindex([s for s in strategy_order if s in metrics_df.index]).dropna(how='all')
 
+            # --- Добавляем переименование индекса для B&H ---
+            new_index = []
+            for idx_name in metrics_df.index:
+                if idx_name.startswith('B&H (') and idx_name != 'B&H (Целевые веса)':
+                    try:
+                        ticker = idx_name.split('(')[1].split(')')[0] # Извлекаем тикер
+                        full_name = COMMON_TICKERS.get(ticker, ticker) # Получаем полное имя
+                        new_index.append(f"B&H ({ticker} - {full_name})") # Формируем новую строку
+                    except IndexError:
+                        new_index.append(idx_name) # Если парсинг не удался, оставляем как есть
+                else:
+                    new_index.append(idx_name)
+            metrics_df.index = new_index
+            # ------------------------------------------------
+
             if not metrics_df.empty:
                 metrics_df_display = metrics_df.copy()
 
-                # --- Убираем временный вывод --- 
+                # --- Убираем временный вывод ---
                 # st.write("Отладочные данные для RF:")
                 # st.dataframe(metrics_df_display[['End Value', 'Max Drawdown %', 'Max Drawdown Abs $', 'Peak Before MDD', 'Recovery Factor']], use_container_width=True)
                 # ---------------------------------
@@ -375,9 +405,9 @@ if run_button:
                 # Названия колонок (финальные)
                 # Добавляем "Кол-во ребал." в список названий
                 final_columns = [
-                    "Конечная стоимость", "CAGR (год. дох-ть)",
-                    "Макс. просадка", "Волатильность (год.)", "Коэф. Шарпа",
-                    "Коэф. Сортино", "Фактор восст.", "Кол-во ребал."
+                    "Конечная стоимость", "CAGR",
+                    "Просадка %", "Волат-ть", "Шарп",
+                    "Сортино", "Ф. Восст.", "Ребал."
                 ]
                 if len(metrics_df_display.columns) == len(final_columns):
                      metrics_df_display.columns = final_columns
@@ -400,16 +430,23 @@ if run_button:
             st.warning("Не удалось рассчитать метрики.")
 
     # Секция 4: Просадки портфелей (новый пункт)
-    st.markdown('<div class="bordered-container">', unsafe_allow_html=True)
-    st.subheader("4. Просадки портфелей")
-    # Вызываем новую функцию графика, передаем drawdown_results
-    drawdown_fig = plots.plot_drawdown_curves(drawdown_results)
-    if drawdown_fig:
-        st.plotly_chart(drawdown_fig, use_container_width=True)
-    else:
-        # Сообщение, если график просадок не удалось построить
-        st.warning("Не удалось построить график просадок.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    with st.expander("4. Просадки портфелей", expanded=True):
+        drawdown_fig = plots.plot_drawdown_curves(drawdown_results)
+        if drawdown_fig:
+            st.plotly_chart(drawdown_fig, use_container_width=True)
+        else:
+            st.warning("Не удалось построить график просадок.")
+
+    # Секция 5: Матрица корреляций
+    with st.expander("5. Матрица корреляций", expanded=True):
+        if price_data is not None and len(tickers) >= 2: # Проверяем наличие данных и >= 2 активов
+            corr_fig = plots.plot_correlation_heatmap(price_data, selected_ticker_map)
+            if corr_fig:
+                st.plotly_chart(corr_fig, use_container_width=True)
+            else:
+                st.warning("Не удалось построить матрицу корреляций.")
+        else:
+            st.warning("Для расчета корреляции необходимо выбрать минимум 2 актива.")
 
 else:
     st.info("Настройте параметры в боковой панели и нажмите 'Запустить Бэктест'.") 

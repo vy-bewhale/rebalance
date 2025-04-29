@@ -45,7 +45,7 @@ def plot_normalized_prices(price_data: pd.DataFrame, ticker_map: Dict[str, str])
         ))
 
     fig.update_layout(
-        title='Динамика нормализованных цен активов (база 100 на начало периода)',
+        # title='Динамика нормализованных цен активов (база 100 на начало периода)', # Убрано
         xaxis_title='Дата',
         yaxis_title='Нормализованная цена',
         legend_title='Активы',
@@ -126,7 +126,7 @@ def plot_equity_curves(backtest_results: pd.DataFrame, ticker_map: Dict[str, str
     # -----------------------------------------
 
     fig.update_layout(
-        title='Динамика стоимости портфелей',
+        # title='Динамика стоимости портфелей', # Убрано
         xaxis_title='Дата',
         yaxis_title='Стоимость портфеля',
         yaxis_type='log',
@@ -171,7 +171,7 @@ def plot_drawdown_curves(drawdown_results: pd.DataFrame) -> Optional[go.Figure]:
             ))
 
     fig.update_layout(
-        title='Динамика просадок портфелей',
+        # title='Динамика просадок портфелей', # Убрано
         xaxis_title='Дата',
         yaxis_title='Просадка (%)',
         legend_title='Стратегия',
@@ -185,5 +185,76 @@ def plot_drawdown_curves(drawdown_results: pd.DataFrame) -> Optional[go.Figure]:
          fig.update_yaxes(range=[min_drawdown * 1.1, 5]) # Чуть ниже минимума и до 5%
     else:
          fig.update_yaxes(range=[-50, 5]) # Диапазон по умолчанию, если нет данных
+
+    return fig
+
+def plot_correlation_heatmap(price_data: pd.DataFrame, ticker_map: Dict[str, str]) -> Optional[go.Figure]:
+    """Строит тепловую карту корреляций дневных доходностей активов.
+
+    Args:
+        price_data (pd.DataFrame): DataFrame с ценами активов (индекс - дата).
+        ticker_map (Dict[str, str]): Словарь для отображения тикеров как названий.
+
+    Returns:
+        Optional[go.Figure]: Объект фигуры Plotly или None.
+    """
+    if price_data is None or price_data.empty:
+        return None
+
+    # Оставляем только активы, исключая Кэш
+    asset_prices = price_data.drop(columns=['Cash'], errors='ignore')
+
+    if asset_prices.shape[1] < 2:
+        print("Warning: Need at least 2 assets to calculate correlation.")
+        return None
+
+    # Расчет дневных доходностей
+    daily_returns = asset_prices.pct_change().dropna()
+
+    if daily_returns.empty:
+        print("Warning: Empty daily returns, cannot calculate correlation.")
+        return None
+
+    # Расчет матрицы корреляций
+    corr_matrix = daily_returns.corr()
+
+    # Создание маски для верхнего треугольника (включая диагональ)
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+
+    # Применение маски (замена верхнего треуг. и диагонали на NaN)
+    corr_matrix_masked = corr_matrix.where(~mask)
+
+    # Замена тикеров на полные названия для осей
+    axis_labels = [ticker_map.get(t, t) for t in corr_matrix.columns]
+
+    # Создание матрицы текста: округленные значения, пустые строки для маски
+    text_labels = corr_matrix.round(2).astype(str)
+    text_labels[mask] = "" # Заменяем ненужные значения на пустые строки
+
+    fig = go.Figure(data=go.Heatmap(
+           z=corr_matrix_masked, # Маскированная матрица для цвета
+           x=axis_labels, # Используем названия для осей
+           y=axis_labels,
+           text=text_labels, # Матрица с пустыми строками для текста
+           texttemplate="%{text}", # Отображаем текст как есть (число или пусто)
+           textfont={"size":10},
+           hoverongaps = False,
+           colorscale='RdBu', # Шкала от красного (-) к синему (+)
+           zmid=0, # Центрируем шкалу на 0
+           zmin=-1, # Устанавливаем мин/макс для консистентности шкалы
+           zmax=1
+    ))
+
+    fig.update_layout(
+        # title='Матрица корреляций дневных доходностей активов', # Убрано
+        xaxis_title='',
+        yaxis_title='',
+        xaxis_tickangle=-45, # Поворот подписей по X
+        yaxis_autorange='reversed', # Переворачиваем ось Y для стандартного вида матрицы
+        width=700, # Фиксированная ширина для читаемости
+        height=600, # Фиксированная высота
+        margin=dict(l=150, r=50, t=50, b=150) # Отступы для длинных названий
+    )
+    fig.update_xaxes(side="bottom") # Перемещаем X ось вниз
 
     return fig 
