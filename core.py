@@ -14,7 +14,7 @@ TRADING_DAYS_PER_YEAR = 252
 @st.cache_data # Кэшируем загрузку данных
 def load_price_data(tickers: List[str], start_date: date, end_date: date) -> Optional[pd.DataFrame]:
     """
-    Загружает исторические цены закрытия для указанных тикеров.
+    Загружает исторические скорректированные цены закрытия ('Adj Close') для указанных тикеров.
 
     Args:
         tickers (List[str]): Список тикеров для загрузки.
@@ -22,61 +22,33 @@ def load_price_data(tickers: List[str], start_date: date, end_date: date) -> Opt
         end_date (date): Конечная дата.
 
     Returns:
-        Optional[pd.DataFrame]: DataFrame с ценами закрытия ('Close') и столбцом 'Cash' = 1.0,
+        Optional[pd.DataFrame]: DataFrame с ценами 'Adj Close' и столбцом 'Cash' = 1.0,
                                 или None в случае ошибки загрузки или отсутствия данных.
     """
     if not tickers:
         print("Error: No tickers provided.")
         return None
     try:
-        # Загружаем данные, используем auto_adjust=True для получения скорректированных цен
-        # (хотя для ETF это менее критично, чем для акций)
-        data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False)
+        # Загружаем данные ОДИН РАЗ, используем auto_adjust=False, чтобы получить 'Adj Close'
+        data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, progress=False) # Убрал progress=True
         if data.empty:
             print(f"Error: No data downloaded for tickers {tickers} in the specified period.")
             return None
 
-        close_prices = data['Close'] # Получаем цены закрытия
-        # Обработка случая одного тикера (yfinance возвращает Series)
-        if isinstance(close_prices, pd.Series):
-            close_prices = close_prices.to_frame(name=tickers[0])
-
-        # Создаем явную копию, чтобы избежать SettingWithCopyWarning
-        prices = close_prices.copy()
-
-        # Проверка на наличие всех тикеров в результате (уже на копии)
-        if not all(ticker in prices.columns for ticker in tickers):
-            missing = [t for t in tickers if t not in prices.columns]
-            print(f"Error: Could not download data for all tickers. Missing: {missing}")
-            return None
-
-        # Удаляем строки, где есть NaN хотя бы для одного тикера (без inplace=True)
-        prices = prices.dropna()
-
-        if prices.empty:
-             print(f"Error: Data became empty after dropping NaN for tickers {tickers}.")
-             return None
-
-        # Добавляем столбец 'Cash' (теперь это безопасно)
-        prices['Cash'] = 1.0
-
-        # Загружаем данные БЕЗ auto_adjust, чтобы получить все колонки, включая Adj Close
-        data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, progress=False)
-        if data.empty:
-            print(f"Error: No data downloaded for tickers {tickers} in the specified period.")
-            return None
-
-        # --- Изменено: Используем 'Adj Close' вместо 'Close' ---
+        # Проверяем, есть ли столбец 'Adj Close'
         if 'Adj Close' not in data.columns:
-             print(f"Error: 'Adj Close' column not found in downloaded data for {tickers}.")
-             # Попытка использовать 'Close' как запасной вариант?
-             # Или просто возвращаем None?
-             # Пока возвращаем None для простоты
-             return None
-             
-        adj_close_prices = data['Adj Close'] 
-        # ------------------------------------------------------
-        
+            print(f"Error: 'Adj Close' column not found in downloaded data for {tickers}.")
+            # Если нет 'Adj Close', возможно, стоит проверить 'Close'? (Сейчас возвращаем None)
+            # levels = data.columns.levels
+            # if len(levels) > 1 and 'Close' in levels[0]: # Проверка для MultiIndex
+            #     print("Trying to use 'Close' prices instead.")
+            #     adj_close_prices = data['Close']
+            # else:
+            #     return None # Если и 'Close' нет или не MultiIndex, то ошибка
+            return None
+
+        adj_close_prices = data['Adj Close']
+
         # Обработка случая одного тикера (yfinance возвращает Series)
         if isinstance(adj_close_prices, pd.Series):
             adj_close_prices = adj_close_prices.to_frame(name=tickers[0])
@@ -85,24 +57,33 @@ def load_price_data(tickers: List[str], start_date: date, end_date: date) -> Opt
         prices = adj_close_prices.copy()
 
         # Проверка на наличие всех тикеров в результате (уже на копии)
+        # Это важно делать ПОСЛЕ извлечения 'Adj Close', т.к. yfinance может вернуть
+        # DataFrame с MultiIndex, где тикеры на втором уровне.
+        # После извлечения 'Adj Close' и to_frame() тикеры должны быть в columns.
         if not all(ticker in prices.columns for ticker in tickers):
             missing = [t for t in tickers if t not in prices.columns]
-            print(f"Error: Could not download data for all tickers. Missing: {missing}")
+            print(f"Error: Could not process data for all tickers after selecting 'Adj Close'. Missing: {missing}")
+            # Возможно, проблема была в самом скачивании, проверим исходный data
+            if isinstance(data.columns, pd.MultiIndex):
+                 available_in_data = [t for t in tickers if t in data.columns.get_level_values(1)]
+                 missing_in_data = [t for t in tickers if t not in available_in_data]
+                 if missing_in_data:
+                      print(f"Original download was missing: {missing_in_data}")
             return None
 
-        # Удаляем строки, где есть NaN хотя бы для одного тикера (без inplace=True)
+        # Удаляем строки, где есть NaN хотя бы для одного тикера
         prices = prices.dropna()
 
         if prices.empty:
              print(f"Error: Data became empty after dropping NaN for tickers {tickers}.")
              return None
 
-        # Добавляем столбец 'Cash' (теперь это безопасно)
+        # Добавляем столбец 'Cash'
         prices['Cash'] = 1.0
         return prices
 
     except Exception as e:
-        print(f"Error downloading data for {tickers}: {e}")
+        print(f"Error downloading or processing data for {tickers}: {e}")
         return None
 
 # --- Функции бэктестинга ---

@@ -1,6 +1,5 @@
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 from pandas import Timestamp
