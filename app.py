@@ -198,6 +198,9 @@ with st.sidebar.expander("Основные параметры", expanded=True): 
         help="Ребалансировка сработает, если ДОЛЯ ЛЮБОГО актива отклонится от целевой более чем на этот %." # Изменено
     )
 
+    # --- ДОБАВЛЯЕМ ОТОБРАЖЕНИЕ РЕЖИМА --- 
+    st.caption(f"Режим загрузки данных: {core.DEFAULT_LOADING_MODE}")
+
     # Безрисковая ставка
     rf_rate_percent = st.number_input("Безрисковая ставка (% годовых)", min_value=0.0, max_value=50.0, value=1.0, step=0.1) # Убрал st.sidebar
     rf_rate_decimal = rf_rate_percent / 100.0
