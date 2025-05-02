@@ -145,6 +145,18 @@ def adjust_weights():
 # st.sidebar.header("Параметры Бэктеста")
 
 with st.sidebar.expander("Основные параметры", expanded=True): # Раскрыт по умолчанию
+    # --- ДОБАВЛЯЕМ ВЫБОР РЕЖИМА ЗАГРУЗКИ --- 
+    loading_mode_options = core.LoadingMode.__args__ # Получаем tuple из Literal
+    # Устанавливаем индекс по умолчанию для 'proxy'
+    default_mode_index = loading_mode_options.index('proxy') if 'proxy' in loading_mode_options else 0
+    selected_loading_mode = st.selectbox(
+        "Режим загрузки данных",
+        options=loading_mode_options,
+        index=default_mode_index,
+        help="'yfinance': прямой доступ. 'proxy': через прокси-сервер. 'yfinance_fallback_proxy': сначала прямой, при ошибке - через прокси."
+    )
+    # ------------------------------------------
+
     # Ввод тикеров через multiselect
     default_tickers = ['SPY', 'GLD', 'IEF', 'BTC-USD'] # Оставляем тикеры как есть
     # Генерируем форматированные названия по умолчанию
@@ -199,10 +211,10 @@ with st.sidebar.expander("Основные параметры", expanded=True): 
     )
 
     # --- ДОБАВЛЯЕМ ОТОБРАЖЕНИЕ РЕЖИМА --- 
-    st.caption(f"Режим загрузки данных: {core.DEFAULT_LOADING_MODE}")
+    # st.caption(f"Режим загрузки данных: {core.DEFAULT_LOADING_MODE}")
 
     # Безрисковая ставка
-    rf_rate_percent = st.number_input("Безрисковая ставка (% годовых)", min_value=0.0, max_value=50.0, value=1.0, step=0.1) # Убрал st.sidebar
+    rf_rate_percent = st.number_input("Безрисковая ставка (% годовых)", min_value=0.0, max_value=50.0, value=1.0, step=0.1)
     rf_rate_decimal = rf_rate_percent / 100.0
 
     # Начальный капитал (вне expander, т.к. он не меняется)
@@ -288,7 +300,13 @@ if run_button:
 
     try:
         with st.spinner('Загрузка исторических данных...'):
-            price_data = core.load_price_data(tickers, start_date, end_date)
+            # Передаем ВЫБРАННЫЙ режим в функцию
+            price_data = core.load_price_data(
+                tickers,
+                start_date,
+                end_date,
+                loading_mode=selected_loading_mode # <-- Передаем выбранный режим
+            )
 
         if price_data is None or price_data.empty:
             st.error("Не удалось загрузить данные. Проверьте выбранные активы и период.")

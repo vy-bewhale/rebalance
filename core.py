@@ -1,132 +1,63 @@
 import pandas as pd
 import numpy as np
-import yfinance as yf
+# yfinance больше не нужен напрямую здесь
 import streamlit as st
 from datetime import date
 from typing import List, Dict, Optional, Tuple, Literal
 from pandas import Timestamp
 
-# Импорт функции прокси (с обработкой ошибки импорта)
+# Импортируем НОВУЮ функцию из yahoo_proxy
 try:
-    from yahoo_proxy import download_via_proxy
+    from yahoo_proxy import _internal_load # <-- Меняем импорт
 except ImportError:
-    print("Warning: Could not import 'download_via_proxy' from 'yahoo_proxy'. Proxy mode will not work.")
-    download_via_proxy = None
+    print("Warning: Could not import '_internal_load' from 'yahoo_proxy'. Data loading will not work.")
+    _internal_load = None
 
 # --- Определения для режима загрузки ---
 LoadingMode = Literal['yfinance', 'proxy', 'yfinance_fallback_proxy']
 
 # --- Константы ---
 TRADING_DAYS_PER_YEAR = 252
-# --- Режим загрузки по умолчанию (установим 'yfinance' для теста) ---
+# --- Режим загрузки по умолчанию (Установим 'proxy' как было) ---
 # DEFAULT_LOADING_MODE: LoadingMode = 'yfinance'
-DEFAULT_LOADING_MODE: LoadingMode = 'proxy' # <--- Меняем на режим прокси
+DEFAULT_LOADING_MODE: LoadingMode = 'proxy' # <-- Возвращаем 'proxy' по умолчанию
 
 # --- Функции загрузки данных ---
 
-@st.cache_data # Кэшируем загрузку данных
+@st.cache_data
 def load_price_data(
     tickers: List[str],
     start_date: date,
     end_date: date,
-    loading_mode: LoadingMode = DEFAULT_LOADING_MODE # <--- Добавляем параметр
+    loading_mode: LoadingMode = DEFAULT_LOADING_MODE
 ) -> Optional[pd.DataFrame]:
     """
-    Загружает исторические скорректированные цены закрытия ('Adj Close') для указанных тикеров.
-
-    Args:
-        tickers (List[str]): Список тикеров для загрузки.
-        start_date (date): Начальная дата.
-        end_date (date): Конечная дата.
-        loading_mode (LoadingMode): Режим загрузки данных.
-
-    Returns:
-        Optional[pd.DataFrame]: DataFrame с ценами 'Adj Close' и столбцом 'Cash' = 1.0,
-                                или None в случае ошибки загрузки или отсутствия данных.
+    Загружает и обрабатывает исторические данные (проксирует вызов в yahoo_proxy).
+    Ожидает на выходе DataFrame с колонкой 'Adj Close' и 'Cash'.
     """
     if not tickers:
         print("Error: No tickers provided.")
         return None
-    try:
-        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
-        print(f"--- Starting data loading using mode: {loading_mode} ---")
-        data = None # Инициализируем data
 
-        # Выбираем источник данных
-        if loading_mode == 'yfinance':
-            print("Attempting direct yf.download...")
-            # auto_adjust=False, как и было в оригинале
-            data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, progress=False)
-        elif loading_mode == 'proxy':
-            if download_via_proxy:
-                print("Attempting download via proxy...")
-                # download_via_proxy теперь тоже вернет с auto_adjust=False
-                data = download_via_proxy(tickers=tickers, start=start_date, end=end_date)
-            else: print("Error: Proxy mode selected, but 'download_via_proxy' not available.")
-        elif loading_mode == 'yfinance_fallback_proxy':
-            print("Attempting direct yf.download (fallback mode)...")
-            try:
-                data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, progress=False)
-                if data is None or data.empty: data = None; print("Direct download failed or empty. Falling back...")
-            except Exception as e_direct: data = None; print(f"Direct download failed: {e_direct}. Falling back...")
-            if data is None and download_via_proxy: # Fallback
-                print("Attempting download via proxy (fallback)...")
-                data = download_via_proxy(tickers=tickers, start=start_date, end=end_date)
-            elif data is None: print("Error: Fallback proxy failed or not available.")
-        else: print(f"Error: Unknown loading_mode '{loading_mode}'.")
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
-        # --- ВСЯ ОСТАЛЬНАЯ ЛОГИКА ФУНКЦИИ ОСТАЕТСЯ ЗДЕСЬ БЕЗ ИЗМЕНЕНИЙ ---
-        if data is None or data.empty:
-            print(f"Error or Warning: No data obtained for tickers {tickers} using mode {loading_mode}.")
+    if _internal_load:
+        try:
+            # Просто вызываем внутреннюю функцию и возвращаем результат
+            print(f"Calling _internal_load from yahoo_proxy with mode: {loading_mode}")
+            result = _internal_load(
+                tickers=tickers,
+                start_date=start_date,
+                end_date=end_date,
+                loading_mode=loading_mode
+            )
+            print("Returned from _internal_load.")
+            return result
+        except Exception as e:
+            print(f"Error during call to _internal_load: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-
-        # Проверяем, есть ли столбец 'Adj Close' (ожидаем его теперь в обоих режимах)
-        if 'Adj Close' not in data.columns:
-            if isinstance(data.columns, pd.MultiIndex) and 'Adj Close' in data.columns.levels[0]:
-                pass # OK, будем извлекать из уровня
-            else:
-                print(f"Error: Expected column 'Adj Close' not found in downloaded data.")
-                print(f"Available columns: {data.columns}")
-                return None
-
-        adj_close_prices = data['Adj Close'] # <--- Теперь всегда ожидаем 'Adj Close'
-
-        # Обработка случая одного тикера (yfinance возвращает Series)
-        if isinstance(adj_close_prices, pd.Series):
-            adj_close_prices = adj_close_prices.to_frame(name=tickers[0])
-
-        # Создаем явную копию, чтобы избежать SettingWithCopyWarning
-        prices = adj_close_prices.copy()
-
-        # Проверка на наличие всех тикеров в результате (уже на копии)
-        # Это важно делать ПОСЛЕ извлечения 'Adj Close', т.к. yfinance может вернуть
-        # DataFrame с MultiIndex, где тикеры на втором уровне.
-        # После извлечения 'Adj Close' и to_frame() тикеры должны быть в columns.
-        if not all(ticker in prices.columns for ticker in tickers):
-            missing = [t for t in tickers if t not in prices.columns]
-            print(f"Error: Could not process data for all tickers after selecting 'Adj Close'. Missing: {missing}")
-            # Возможно, проблема была в самом скачивании, проверим исходный data
-            if isinstance(data.columns, pd.MultiIndex):
-                 available_in_data = [t for t in tickers if t in data.columns.get_level_values(1)]
-                 missing_in_data = [t for t in tickers if t not in available_in_data]
-                 if missing_in_data:
-                      print(f"Original download was missing: {missing_in_data}")
-            return None
-
-        # Удаляем строки, где есть NaN хотя бы для одного тикера
-        prices = prices.dropna()
-
-        if prices.empty:
-             print(f"Error: Data became empty after dropping NaN for tickers {tickers}.")
-             return None
-
-        # Добавляем столбец 'Cash'
-        prices['Cash'] = 1.0
-        return prices
-
-    except Exception as e:
-        print(f"Error downloading or processing data for {tickers}: {e}")
+    else:
+        print("Error: Data loading function (_internal_load) is not available.")
         return None
 
 # --- Функции бэктестинга ---
