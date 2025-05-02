@@ -9,7 +9,7 @@ from typing import Dict, List
 # --- Настройка страницы ---
 st.set_page_config(layout="wide", page_title="Бэктестер Ребалансировки")
 
-# --- CSS для уменьшения шрифтов И ДОБАВЛЕНИЯ РАМОК КОНТЕЙНЕРАМ ---
+# --- CSS для уменьшения шрифтов И ДОБАВЛЕНИЯ РАМОК КОНТЕЙНЕРАМ И ВЫРАВНИВАНИЯ В КОЛОНКАХ ---
 st.markdown("""
 <style>
     /* Уменьшаем шрифт для опций и выбранных элементов в multiselect */
@@ -41,6 +41,19 @@ st.markdown("""
         margin-bottom: 1.5rem;      /* Внешний отступ снизу */
         box-shadow: 0 1px 3px rgba(0,0,0,0.05); /* Легкая тень */
     }
+
+    /* --- CSS для вертикального выравнивания в колонках --- */
+    div[data-testid="stHorizontalBlock"] > div[data-testid^="stVerticalBlock"] {
+        display: flex;
+        flex-direction: column;
+        justify-content: center; /* Оставляем попытку центрирования */
+    }
+
+    /* --- УБИРАЕМ CSS для метки st.toggle, так как метка будет скрыта --- */
+    /* div[data-testid="stToggle"] label p {
+        font-size: 0.9em !important;
+        margin-bottom: 0px !important;
+    } */
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,15 +213,34 @@ with st.sidebar.expander("Основные параметры", expanded=True): 
         format_func=lambda x: rebalance_freq_options[x]
     )
 
-    # Новый ввод: Порог изменения **доли** для ребалансировки (ИСПРАВЛЕНО НАЗВАНИЕ И HELP)
-    price_change_threshold = st.number_input( # Убрал st.sidebar
-        "Порог отклон. доли для ребал. (%)", # Изменено
-        min_value=1.0,
-        max_value=100.0,
-        value=10.0,
-        step=0.5,
-        help="Ребалансировка сработает, если ДОЛЯ ЛЮБОГО актива отклонится от целевой более чем на этот %." # Изменено
-    )
+    # --- ИЗМЕНЕННЫЙ БЛОК: Порог и Тип отклонения в колонках ---
+    # Добавляем общий заголовок
+    st.markdown("<small>Порог %, абс/отн</small>", unsafe_allow_html=True) # Используем <small> для заголовка
+    # Меняем пропорции и скрываем индивидуальные метки
+    col1, col2 = st.columns([3, 1]) # Пропорции: 3 части для ввода, 1 для переключателя
+
+    with col1:
+        price_change_threshold = st.number_input(
+            "Порог откл. (%)", # Метка нужна для streamlit, но будет скрыта
+            label_visibility="collapsed", # Скрываем метку
+            min_value=1.0,
+            max_value=100.0,
+            value=10.0,
+            step=0.5,
+            help="Порог отклонения доли актива от целевой (абсолютный или относительный).", # Обновляем help
+            key='price_change_threshold_input'
+        )
+
+    with col2:
+        use_relative_threshold = st.toggle(
+            "Относительный порог?", # Метка нужна для streamlit, но будет скрыта
+            label_visibility="collapsed", # Скрываем метку
+            value=False,
+            help="Выкл = абсолютный порог (%), Вкл = относительный порог (%).", # Обновляем help
+            key='deviation_type_toggle'
+        )
+        deviation_type = 'relative' if use_relative_threshold else 'absolute'
+    # -------------------------------------------------------
 
     # --- ДОБАВЛЯЕМ ОТОБРАЖЕНИЕ РЕЖИМА --- 
     # st.caption(f"Режим загрузки данных: {core.DEFAULT_LOADING_MODE}")
@@ -324,7 +356,8 @@ if run_button:
                 target_weights=normalized_weights,
                 rebalance_freq=rebalance_freq_display,
                 initial_capital=initial_capital,
-                weight_deviation_threshold=price_change_threshold # Передаем новый параметр
+                weight_deviation_threshold=price_change_threshold, # Передаем новый параметр
+                deviation_type=deviation_type # Передаем новый параметр
             )
             if backtest_output is None:
                 st.error("Ошибка при выполнении бэктеста.")

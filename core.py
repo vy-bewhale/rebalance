@@ -106,9 +106,14 @@ def format_hover_weights(holdings_dict: Dict[str, float], cash_value: float,
     return '/'.join(hover_parts)
 
 @st.cache_data
-def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
-                 rebalance_freq: str, initial_capital: float,
-                 weight_deviation_threshold: float) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
+def run_backtest(
+    price_data: pd.DataFrame,
+    target_weights: Dict[str, float],
+    rebalance_freq: str,
+    initial_capital: float,
+    weight_deviation_threshold: float,
+    deviation_type: Literal['absolute', 'relative']
+) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
     """
     Выполняет бэктестинг стратегий ребалансировки и сравнение с Buy & Hold.
 
@@ -118,6 +123,7 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
         rebalance_freq (str): Частота ребалансировки (Календарная: 'ME', 'QE', 'YE').
         initial_capital (float): Начальный капитал.
         weight_deviation_threshold (float): Абсолютный порог отклонения доли в % для запуска ребалансировки.
+        deviation_type (Literal['absolute', 'relative']): Тип порога отклонения.
 
     Returns:
         Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
@@ -137,7 +143,7 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
          return None
 
     # Конвертируем порог из % в долю
-    threshold_weight_abs_delta = weight_deviation_threshold / 100.0
+    threshold_weight_delta_fraction = weight_deviation_threshold / 100.0
 
     # Определяем активы для ребалансировки (из target_weights) и все активы (из price_data)
     assets_to_rebalance = [col for col in target_weights.keys() if col != 'Cash']
@@ -255,7 +261,7 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
 
     calendar_rebalanced_values = portfolio_cal['Total_Value'].copy().rename('Calendar_Rebalanced_Value')
 
-    # --- 2. Логика ребалансировки ПО ПОРОГУ ОТКЛОНЕНИЯ ДОЛИ --- (изменено)
+    # --- 2. Логика ребалансировки ПО ПОРОГУ ОТКЛОНЕНИЯ ДОЛИ ---
     portfolio_wb = pd.DataFrame(index=price_data.index) # wb = weight band
     portfolio_wb['Holdings'] = pd.Series(dtype=object)
     portfolio_wb['Cash'] = np.nan
@@ -290,13 +296,25 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
 
         # Проверка условия ребалансировки по ДОЛЕ
         trigger_rebalance = False
-        if current_total_value > 1e-6: # Избегаем деления на ноль
+        if current_total_value > 1e-9:
             for ticker in assets_to_rebalance:
-                current_asset_value = asset_values_today.get(ticker, 0.0)
-                current_weight = current_asset_value / current_total_value
+                current_asset_val_ticker = asset_values_today.get(ticker, 0.0)
+                current_weight = current_asset_val_ticker / current_total_value
                 target_weight = target_weights.get(ticker, 0.0)
-                # Проверка абсолютного отклонения доли
-                if abs(current_weight - target_weight) > threshold_weight_abs_delta:
+
+                # --- ИЗМЕНЕННАЯ ЛОГИКА ПРОВЕРКИ ОТКЛОНЕНИЯ ---
+                deviation_exceeded = False
+                if deviation_type == 'relative':
+                    if target_weight > 1e-9:
+                        relative_deviation = abs(current_weight - target_weight) / target_weight
+                        if relative_deviation > threshold_weight_delta_fraction:
+                            deviation_exceeded = True
+                if not deviation_exceeded:
+                    if abs(current_weight - target_weight) > threshold_weight_delta_fraction:
+                        deviation_exceeded = True
+                # -------------------------------------------------
+
+                if deviation_exceeded:
                     trigger_rebalance = True
                     break
 
@@ -330,7 +348,7 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
 
     weight_band_rebalanced_values = portfolio_wb['Total_Value'].copy().rename('Weight_Band_Value') # Переименовано
 
-    # --- 3. Логика КОМБИНИРОВАННОЙ ребалансировки (Календарь ИЛИ Доля %) --- (изменено)
+    # --- 3. Логика КОМБИНИРОВАННОЙ ребалансировки (Календарь ИЛИ Доля %) ---
     portfolio_comb = pd.DataFrame(index=price_data.index)
     portfolio_comb['Holdings'] = pd.Series(dtype=object)
     portfolio_comb['Cash'] = np.nan
@@ -366,17 +384,30 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
         # Проверка триггеров
         calendar_trigger = current_date in rebalance_dates_cal
         weight_trigger = False
-        if current_total_value > 1e-6:
+        if current_total_value > 1e-9:
             for ticker in assets_to_rebalance:
-                current_asset_value = asset_values_today_comb.get(ticker, 0.0)
-                current_weight = current_asset_value / current_total_value
+                current_asset_val_ticker = asset_values_today_comb.get(ticker, 0.0)
+                current_weight = current_asset_val_ticker / current_total_value
                 target_weight = target_weights.get(ticker, 0.0)
-                if abs(current_weight - target_weight) > threshold_weight_abs_delta:
+
+                # --- ИЗМЕНЕННАЯ ЛОГИКА ПРОВЕРКИ ОТКЛОНЕНИЯ (такая же, как в п.2) ---
+                deviation_exceeded = False
+                if deviation_type == 'relative':
+                    if target_weight > 1e-9:
+                        relative_deviation = abs(current_weight - target_weight) / target_weight
+                        if relative_deviation > threshold_weight_delta_fraction:
+                            deviation_exceeded = True
+                if not deviation_exceeded:
+                    if abs(current_weight - target_weight) > threshold_weight_delta_fraction:
+                        deviation_exceeded = True
+                # --------------------------------------------------------------
+
+                if deviation_exceeded:
                     weight_trigger = True
                     break
 
         # Ребалансировка, если ЛЮБОЙ триггер сработал
-        if calendar_trigger or weight_trigger:
+        if (calendar_trigger or weight_trigger) and current_total_value > 1e-9:
             # (стандартная логика ребалансировки, без обновления baseline цен)
             new_holdings = holdings_dict.copy()
             cash_after_rebalance = 0.0
@@ -393,7 +424,7 @@ def run_backtest(price_data: pd.DataFrame, target_weights: Dict[str, float],
             portfolio_comb.at[current_date, 'Cash'] = cash_after_rebalance
             # Удалено обновление цен триггера
             # --- Логирование ---
-            event_type = 'weight_band' if weight_trigger else 'calendar'
+            event_type = 'calendar' if calendar_trigger else 'weight_band'
             combined_rebalance_log.append((current_date, event_type))
             # -------------------
             # (логика обновления baseline цен для weight_trigger)
