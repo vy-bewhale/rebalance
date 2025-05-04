@@ -89,7 +89,7 @@ COMMON_TICKERS = {
     'EMB': 'USD Emerging Markets Bond ETF',
     # Золото
     'GLD': 'Gold ETF',
-    'GC=F': 'Gold Futures (COMEX)',
+    '^XAU': 'PHLX Gold/Silver Index',
     # Недвижимость
     'VNQ': 'Real Estate ETF',
     # Сырье
@@ -123,7 +123,7 @@ ASSET_GROUPS = {
     'BNDX': 'Обл. Межд.',
     'EMB': 'Обл. Развивш.',
     'GLD': 'Золото',
-    'GC=F': 'Золото (Фьючерс)',
+    '^XAU': 'Золото (Индекс комп.)',
     'VNQ': 'Недвиж.',
     'DBC': 'Сырье',
     'BTC-USD': 'Крипто', 'ETH-USD': 'Крипто', 'LTC-USD': 'Крипто',
