@@ -66,6 +66,7 @@ st.subheader("Интерактивный Бэктестер Ребалансир
 COMMON_TICKERS = {
     # Акции США
     'SPY': 'S&P 500 ETF', 'QQQ': 'Nasdaq 100 ETF', 'IWM': 'Russell 2000 ETF', 'DIA': 'Dow Jones ETF',
+    '^GSPC': 'S&P 500 Index',
     'XLK': 'Technology Sector SPDR Fund', 'XLF': 'Financial Sector SPDR Fund',
     'XLP': 'Consumer Staples Sel Sec SPDR',
     'XLV': 'Healthcare Sector SPDR Fund',
@@ -88,6 +89,7 @@ COMMON_TICKERS = {
     'EMB': 'USD Emerging Markets Bond ETF',
     # Золото
     'GLD': 'Gold ETF',
+    'GC=F': 'Gold Futures (COMEX)',
     # Недвижимость
     'VNQ': 'Real Estate ETF',
     # Сырье
@@ -105,6 +107,7 @@ COMMON_TICKERS = {
 # Группы активов (сопоставление тикера с названием группы)
 ASSET_GROUPS = {
     'SPY': 'Акции США', 'QQQ': 'Акции США', 'IWM': 'Акции США', 'DIA': 'Акции США',
+    '^GSPC': 'Акции США (Индекс)',
     'XLK': 'Акции США (Сектор)', 'XLF': 'Акции США (Сектор)',
     'XLP': 'Акции США (Сектор)',
     'XLV': 'Акции США (Сектор)',
@@ -120,6 +123,7 @@ ASSET_GROUPS = {
     'BNDX': 'Обл. Межд.',
     'EMB': 'Обл. Развивш.',
     'GLD': 'Золото',
+    'GC=F': 'Золото (Фьючерс)',
     'VNQ': 'Недвиж.',
     'DBC': 'Сырье',
     'BTC-USD': 'Крипто', 'ETH-USD': 'Крипто', 'LTC-USD': 'Крипто',
