@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import datetime
+import datetime as dt
 import core # Импортируем наш модуль с логикой
 import plots # Импортируем наш модуль с графиками
 from typing import Dict, List
@@ -200,10 +200,22 @@ with st.sidebar.expander("Основные параметры", expanded=True): 
     }
 
     # Ввод дат
-    default_end_date = datetime.date.today()
-    default_start_date = default_end_date - datetime.timedelta(days=10*365) # Примерно 10 лет назад
-    start_date = st.date_input("Начальная дата", default_start_date) # Убрал st.sidebar
-    end_date = st.date_input("Конечная дата", default_end_date) # Убрал st.sidebar
+    min_date = dt.date(1990, 1, 1)  # Set the earliest possible date
+    today = dt.date.today()
+    start_date = st.date_input(
+        "Начальная дата",
+        value=dt.date(2010, 1, 1),  # Default start date
+        min_value=min_date,        # Set minimum allowed date
+        max_value=today - dt.timedelta(days=1), # Max is yesterday
+        help="Select the start date for the historical data.",
+    )
+    end_date = st.date_input(
+        "Конечная дата",
+        value=today,
+        min_value=start_date + dt.timedelta(days=1), # Min is day after start
+        max_value=today,           # Max is today
+        help="Select the end date for the historical data.",
+    )
 
     # Выбор частоты ребалансировки
     rebalance_freq_options = {'ME': 'Ежемесячно', 'QE': 'Ежеквартально', 'YE': 'Ежегодно'} # Обновлено на новые коды
